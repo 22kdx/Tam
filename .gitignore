@@ -1,0 +1,7 @@
+.env
+.env.*
+!.env.example
+*.sql.gz
+backups/
+secrets/
+.DS_Store

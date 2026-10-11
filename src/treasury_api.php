@@ -13,6 +13,43 @@ if($path==='accounts'&&$method==='GET'){$s=$pdo->prepare("SELECT a.*,c.code,c.sy
 if($path==='accounts'&&$method==='POST'){$name=trim($body['name']??'');$cur=(int)($body['currency_id']??0);$type=$body['account_type']??'cash';if($name===''||!in_array($type,['cash','bank','wallet','custom'],true))out(['error'=>'invalid_account_data'],422);$s=$pdo->prepare('SELECT id FROM treasury_currencies WHERE id=? AND company_id=? AND is_active=1');$s->execute([$cur,$cid]);if(!$s->fetch())out(['error'=>'currency_not_found'],404);$s=$pdo->prepare('INSERT INTO treasury_accounts(company_id,currency_id,name,account_type,institution,account_number,opening_balance,allow_negative,notes) VALUES(?,?,?,?,?,?,?,?,?)');$s->execute([$cid,$cur,$name,$type,$body['institution']??null,$body['account_number']??null,(float)($body['opening_balance']??0),!empty($body['allow_negative'])?1:0,$body['notes']??null]);out(['id'=>$pdo->lastInsertId(),'created'=>true],201);}
 
 
+
+if($path==='exchanges'&&$method==='POST'){
+  $fromId=(int)($body['from_account_id']??0);$toId=(int)($body['to_account_id']??0);$fromAmount=(float)($body['amount']??0);
+  $idem=trim($headers['Idempotency-Key']??$headers['IDEMPOTENCY-KEY']??'');
+  if($fromId<=0||$toId<=0||$fromId===$toId||$fromAmount<=0)out(['error'=>'invalid_exchange_data'],422);
+  if($idem===''||strlen($idem)>191)out(['error'=>'idempotency_key_required'],422);
+  $customRate=isset($body['base_amount_per_source_unit'])?(float)$body['base_amount_per_source_unit']:null;
+  if($customRate!==null&&$customRate<=0)out(['error'=>'invalid_exchange_rate'],422);
+  $requestHash=hash('sha256',json_encode([$fromId,$toId,number_format($fromAmount,4,'.',''),$customRate,$body['description']??'']));
+  try{
+    $pdo->beginTransaction();
+    try{$s=$pdo->prepare('INSERT INTO treasury_idempotency(company_id,idempotency_key,request_hash) VALUES(?,?,?)');$s->execute([$cid,$idem,$requestHash]);}
+    catch(PDOException $e){
+      if($e->getCode()!=='23000')throw $e;
+      $s=$pdo->prepare('SELECT request_hash,response_code,response_body FROM treasury_idempotency WHERE company_id=? AND idempotency_key=? FOR UPDATE');$s->execute([$cid,$idem]);$old=$s->fetch(PDO::FETCH_ASSOC);
+      if(!$old||$old['request_hash']!==$requestHash){$pdo->rollBack();out(['error'=>'idempotency_key_conflict'],409);}
+      if($old['response_body']){$saved=json_decode($old['response_body'],true);$pdo->commit();out($saved,(int)$old['response_code']);}
+      throw new RuntimeException('idempotency_request_in_progress');
+    }
+    $ids=[$fromId,$toId];sort($ids);$s=$pdo->prepare('SELECT a.*,c.code,c.rate_to_base,c.precision_digits FROM treasury_accounts a JOIN treasury_currencies c ON c.id=a.currency_id WHERE a.company_id=? AND a.is_active=1 AND a.id IN (?,?) ORDER BY a.id FOR UPDATE');$s->execute([$cid,$ids[0],$ids[1]]);$rows=$s->fetchAll(PDO::FETCH_ASSOC);
+    if(count($rows)!==2){$pdo->rollBack();out(['error'=>'account_not_found'],404);}$by=[];foreach($rows as $r)$by[(int)$r['id']]=$r;$from=$by[$fromId];$to=$by[$toId];
+    if((int)$from['currency_id']===(int)$to['currency_id']){$pdo->rollBack();out(['error'=>'same_currency','message'=>'Use the transfers endpoint for the same currency'],422);}
+    $s=$pdo->prepare("SELECT COALESCE(SUM(CASE WHEN transaction_type IN ('deposit','transfer_in','exchange_in','opening') THEN amount ELSE -amount END),0) FROM treasury_transactions WHERE account_id=?");$s->execute([$fromId]);$balance=(float)$from['opening_balance']+(float)$s->fetchColumn();
+    if(!$from['allow_negative']&&$fromAmount>$balance){$pdo->rollBack();out(['error'=>'insufficient_balance','available_balance'=>$balance],409);}
+    $fromRate=$customRate??(float)$from['rate_to_base'];$toRate=(float)$to['rate_to_base'];$baseAmount=round($fromAmount*$fromRate,4);$toAmount=round($baseAmount/$toRate,(int)$to['precision_digits']);
+    if($toAmount<=0){$pdo->rollBack();out(['error'=>'exchange_amount_too_small'],422);}
+    $group=sprintf('%s-%s-%s-%s-%s',bin2hex(random_bytes(4)),bin2hex(random_bytes(2)),bin2hex(random_bytes(2)),bin2hex(random_bytes(2)),bin2hex(random_bytes(6)));$occurred=$body['occurred_at']??date('Y-m-d H:i:s');$desc=$body['description']??null;
+    $ins=$pdo->prepare('INSERT INTO treasury_transactions(company_id,account_id,transaction_type,amount,currency_id,rate_to_base,base_amount,transfer_group,description,occurred_at,created_by) VALUES(?,?,?,?,?,?,?,?,?,?,?)');
+    $ins->execute([$cid,$fromId,'exchange_out',$fromAmount,$from['currency_id'],$fromRate,$baseAmount,$group,$desc,$occurred,'user:'.$uid]);$outId=$pdo->lastInsertId();
+    $ins->execute([$cid,$toId,'exchange_in',$toAmount,$to['currency_id'],$toRate,$baseAmount,$group,$desc,$occurred,'user:'.$uid]);$inId=$pdo->lastInsertId();
+    $response=['exchange_group'=>$group,'out_transaction_id'=>$outId,'in_transaction_id'=>$inId,'source_amount'=>$fromAmount,'source_currency'=>$from['code'],'target_amount'=>$toAmount,'target_currency'=>$to['code'],'base_amount'=>$baseAmount,'source_rate_to_base'=>$fromRate,'target_rate_to_base'=>$toRate,'source_balance'=>$balance-$fromAmount,'created'=>true];
+    $pdo->prepare('UPDATE treasury_idempotency SET response_code=201,response_body=? WHERE company_id=? AND idempotency_key=?')->execute([json_encode($response,JSON_UNESCAPED_UNICODE),$cid,$idem]);
+    $pdo->prepare('INSERT INTO treasury_audit_logs(company_id,user_id,action,entity_type,entity_id,metadata,ip_address) VALUES(?,?,?,?,?,?,?)')->execute([$cid,$uid,'exchange.created','treasury_exchange',$group,json_encode($response,JSON_UNESCAPED_UNICODE),$_SERVER['REMOTE_ADDR']??null]);
+    $pdo->commit();out($response,201);
+  }catch(Throwable $e){if($pdo->inTransaction())$pdo->rollBack();out(['error'=>'exchange_failed','message'=>$e->getMessage()],500);}
+}
+
 if($path==='transfers'&&$method==='POST'){
   $fromId=(int)($body['from_account_id']??0);$toId=(int)($body['to_account_id']??0);$amount=(float)($body['amount']??0);
   $idem=trim($headers['Idempotency-Key']??$headers['IDEMPOTENCY-KEY']??'');

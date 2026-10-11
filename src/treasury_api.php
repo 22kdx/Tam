@@ -10,7 +10,7 @@ $path=preg_replace('#^/api/treasury/v1/?#','',parse_url($_SERVER['REQUEST_URI'],
 if($method==='DELETE')out(['error'=>'deletion_disabled','message'=>'Deletion is permanently disabled for financial records'],403);
 $settingQ=$pdo->prepare("SELECT setting_value FROM treasury_settings WHERE company_id=? AND setting_key='cancellation_enabled' LIMIT 1");$settingQ->execute([$cid]);$reversalEnabled=$settingQ->fetchColumn()==='1';
 if(preg_match('#(^|/)(cancel|void)(/|$)#i',$path))out(['error'=>'cancellation_disabled'],403);
-if(preg_match('#(^|/)(reverse|reversal)(/|$)#i',$path)&&!$reversalEnabled)out(['error'=>'reversal_disabled','message'=>'Reversal operations are disabled in settings'],403);
+if($path!=='settings/reversal'&&preg_match('#(^|/)(reverse|reversal)(/|$)#i',$path)&&!$reversalEnabled)out(['error'=>'reversal_disabled','message'=>'Reversal operations are disabled in settings'],403);
 if($method==='GET'&&$path!=='health'&&!$canView)out(['error'=>'view_permission_required'],403);
 if($method==='POST'&&in_array($path,['transactions','transfers','exchanges','fees'],true)&&!$canTransact)out(['error'=>'transaction_permission_required'],403);
 if($method==='POST'&&in_array($path,['currencies','accounts'],true)&&!$canManage)out(['error'=>'manage_permission_required'],403);

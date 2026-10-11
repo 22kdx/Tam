@@ -15,6 +15,25 @@ if($path==='accounts'&&$method==='POST'){$name=trim($body['name']??'');$cur=(int
 
 
 
+
+if($path==='transactions'&&$method==='GET'){
+  $where=['t.company_id=?'];$params=[$cid];
+  if(isset($_GET['account_id'])&&(int)$_GET['account_id']>0){$where[]='t.account_id=?';$params[]=(int)$_GET['account_id'];}
+  if(!empty($_GET['type'])){$where[]='t.transaction_type=?';$params[]=$_GET['type'];}
+  if(!empty($_GET['from'])){$where[]='t.occurred_at>=?';$params[]=$_GET['from'].' 00:00:00';}
+  if(!empty($_GET['to'])){$where[]='t.occurred_at<=?';$params[]=$_GET['to'].' 23:59:59';}
+  $limit=max(1,min(100,(int)($_GET['limit']??50)));$offset=max(0,(int)($_GET['offset']??0));
+  $sql='SELECT t.*,a.name account_name,c.code currency_code,c.symbol currency_symbol FROM treasury_transactions t JOIN treasury_accounts a ON a.id=t.account_id JOIN treasury_currencies c ON c.id=t.currency_id WHERE '.implode(' AND ',$where).' ORDER BY t.occurred_at DESC,t.id DESC LIMIT '.$limit.' OFFSET '.$offset;
+  $q=$pdo->prepare($sql);$q->execute($params);$data=$q->fetchAll(PDO::FETCH_ASSOC);
+  $count=$pdo->prepare('SELECT COUNT(*) FROM treasury_transactions t WHERE '.implode(' AND ',$where));$count->execute($params);
+  out(['data'=>$data,'meta'=>['total'=>(int)$count->fetchColumn(),'limit'=>$limit,'offset'=>$offset]]);
+}
+if($path==='reports/balances'&&$method==='GET'){
+  $q=$pdo->prepare("SELECT a.id,a.name,a.account_type,a.institution,a.allow_negative,c.id currency_id,c.code,c.name currency_name,c.symbol,c.rate_to_base,a.opening_balance,COALESCE(a.opening_balance+SUM(CASE WHEN t.transaction_type IN ('deposit','transfer_in','exchange_in','fee_in','opening') THEN t.amount ELSE -t.amount END),a.opening_balance) balance FROM treasury_accounts a JOIN treasury_currencies c ON c.id=a.currency_id LEFT JOIN treasury_transactions t ON t.account_id=a.id WHERE a.company_id=? AND a.is_active=1 GROUP BY a.id,c.id ORDER BY c.is_base DESC,c.code,a.id");$q->execute([$cid]);$accounts=$q->fetchAll(PDO::FETCH_ASSOC);
+  $currencies=[];$grand=0.0;foreach($accounts as &$a){$a['balance']=(float)$a['balance'];$a['base_balance']=round($a['balance']*(float)$a['rate_to_base'],4);$grand+=$a['base_balance'];$code=$a['code'];if(!isset($currencies[$code]))$currencies[$code]=['code'=>$code,'symbol'=>$a['symbol'],'balance'=>0.0,'base_balance'=>0.0];$currencies[$code]['balance']+=$a['balance'];$currencies[$code]['base_balance']+=$a['base_balance'];}unset($a);
+  out(['data'=>['accounts'=>$accounts,'currencies'=>array_values($currencies),'grand_total_base'=>round($grand,4),'base_currency'=>($pdo->query("SELECT code FROM treasury_currencies WHERE company_id=".(int)$cid." AND is_base=1 LIMIT 1")->fetchColumn()?:null),'generated_at'=>date(DATE_ATOM)]]);
+}
+
 if($path==='fees'&&$method==='POST'){
   $fromId=(int)($body['from_account_id']??0);$feeAccountId=(int)($body['fee_account_id']??0);$amount=(float)($body['amount']??0);
   $idem=trim($headers['Idempotency-Key']??$headers['IDEMPOTENCY-KEY']??'');

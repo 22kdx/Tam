@@ -16,6 +16,9 @@ if($method==='POST'&&in_array($path,['transactions','transfers','exchanges','fee
 if($method==='POST'&&in_array($path,['currencies','accounts'],true)&&!$canManage)out(['error'=>'manage_permission_required'],403);
 if($path===''||$path==='health')out(['ok'=>true,'service'=>'treasury','version'=>'1.0.0']);
 
+if($path==='permissions/users'&&$method==='GET'){
+  if(!$canManage)out(['error'=>'manage_permission_required'],403);$q=$pdo->prepare('SELECT u.id,u.first_name,u.last_name,u.email,u.last_login,cu.is_owner,cu.is_admin,cu.is_locked,COALESCE(tp.can_view,1) can_view,COALESCE(tp.can_transact,0) can_transact,COALESCE(tp.can_manage,0) can_manage FROM company_user cu JOIN users u ON u.id=cu.user_id LEFT JOIN treasury_user_permissions tp ON tp.company_id=cu.company_id AND tp.user_id=cu.user_id WHERE cu.company_id=? AND cu.deleted_at IS NULL AND u.is_deleted=0 ORDER BY cu.is_owner DESC,cu.is_admin DESC,u.first_name,u.id');$q->execute([$cid]);$rows=$q->fetchAll(PDO::FETCH_ASSOC);foreach($rows as &$r){$admin=(bool)($r['is_owner']||$r['is_admin']);if($admin){$r['can_view']=1;$r['can_transact']=1;$r['can_manage']=1;}$r['display_name']=trim(($r['first_name']??'').' '.($r['last_name']??''));if($r['display_name']===''||str_contains($r['display_name'],'?'))$r['display_name']=$r['email'];}unset($r);out(['data'=>$rows]);
+}
 if($path==='permissions/me'&&$method==='GET')out(['data'=>['user_id'=>$uid,'company_id'=>$cid,'can_view'=>$canView,'can_transact'=>$canTransact,'can_manage'=>$canManage,'is_admin'=>$isAdmin]]);
 if($path==='audit-logs'&&$method==='GET'){
   if(!$canManage)out(['error'=>'manage_permission_required'],403);$limit=max(1,min(100,(int)($_GET['limit']??50)));$offset=max(0,(int)($_GET['offset']??0));$q=$pdo->prepare('SELECT * FROM treasury_audit_logs WHERE company_id=? ORDER BY created_at DESC,id DESC LIMIT '.$limit.' OFFSET '.$offset);$q->execute([$cid]);out(['data'=>$q->fetchAll(PDO::FETCH_ASSOC),'meta'=>['limit'=>$limit,'offset'=>$offset]]);

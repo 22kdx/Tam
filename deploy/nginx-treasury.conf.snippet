@@ -1,0 +1,9 @@
+location ^~ /treasury/ {
+    index index.html;
+    try_files $uri $uri/ /treasury/index.html;
+}
+location ^~ /api/treasury/v1 {
+    include fastcgi_params;
+    fastcgi_param SCRIPT_FILENAME /var/www/html/public/treasury_api.php;
+    fastcgi_pass app:9000;
+}

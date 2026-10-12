@@ -110,7 +110,7 @@ if(preg_match('#^transactions/(\\d+)/restore$#',$path,$m)&&$method==='POST'){
 if($path==='transactions'&&$method==='GET'){
   $where=['t.company_id=?'];$params=[$cid];if(!(isset($_GET['include_deleted'])&&$_GET['include_deleted']==='1'&&$canManage))$where[]="t.status<>'deleted'";
   if(isset($_GET['account_id'])&&(int)$_GET['account_id']>0){$where[]='t.account_id=?';$params[]=(int)$_GET['account_id'];}
-  if(!empty($_GET['type'])){$where[]='t.transaction_type=?';$params[]=$_GET['type'];}if(!empty($_GET['status'])&&in_array($_GET['status'],['active','cancelled','deleted'],true)){$where[]='t.status=?';$params[]=$_GET['status'];}
+  if(!empty($_GET['type'])){$where[]='t.transaction_type=?';$params[]=$_GET['type'];}if(isset($_GET['currency_id'])&&(int)$_GET['currency_id']>0){$where[]='t.currency_id=?';$params[]=(int)$_GET['currency_id'];}if(isset($_GET['user_id'])&&(int)$_GET['user_id']>0){$where[]="t.created_by=?";$params[]='user:'.(int)$_GET['user_id'];}if(!empty($_GET['search'])){$where[]='(t.description LIKE ? OR t.reference_id LIKE ? OR t.transfer_group LIKE ?)';$term='%'.$_GET['search'].'%';$params[]=$term;$params[]=$term;$params[]=$term;}if(!empty($_GET['status'])&&in_array($_GET['status'],['active','cancelled','deleted'],true)){$where[]='t.status=?';$params[]=$_GET['status'];}
   if(!empty($_GET['from'])){$where[]='t.occurred_at>=?';$params[]=$_GET['from'].' 00:00:00';}
   if(!empty($_GET['to'])){$where[]='t.occurred_at<=?';$params[]=$_GET['to'].' 23:59:59';}
   $limit=max(1,min(100,(int)($_GET['limit']??50)));$offset=max(0,(int)($_GET['offset']??0));

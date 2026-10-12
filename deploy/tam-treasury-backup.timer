@@ -1,0 +1,11 @@
+[Unit]
+Description=Run Tam Treasury backup every day
+
+[Timer]
+OnCalendar=*-*-* 02:30:00
+Persistent=true
+RandomizedDelaySec=10m
+Unit=tam-treasury-backup.service
+
+[Install]
+WantedBy=timers.target

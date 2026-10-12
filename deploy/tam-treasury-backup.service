@@ -1,0 +1,12 @@
+[Unit]
+Description=Tam Treasury daily backup
+Requires=docker.service
+After=docker.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/tam-treasury-backup
+Environment=RETENTION_DAYS=14
+Nice=10
+IOSchedulingClass=best-effort
+IOSchedulingPriority=7

@@ -96,10 +96,21 @@ if(preg_match('#^transactions/(\\d+)$#',$path,$m)&&$method==='DELETE'){
   }catch(Throwable $e){if($pdo->inTransaction())$pdo->rollBack();out(['error'=>'deletion_failed','message'=>$e->getMessage()],500);}
 }
 
+
+if(preg_match('#^transactions/(\\d+)/restore$#',$path,$m)&&$method==='POST'){
+  if(!$canManage)out(['error'=>'manage_permission_required'],403);$reason=trim($body['reason']??'');if($reason==='')out(['error'=>'restore_reason_required'],422);$id=(int)$m[1];
+  try{$pdo->beginTransaction();$q=$pdo->prepare('SELECT * FROM treasury_transactions WHERE id=? AND company_id=? FOR UPDATE');$q->execute([$id,$cid]);$first=$q->fetch(PDO::FETCH_ASSOC);if(!$first){$pdo->rollBack();out(['error'=>'transaction_not_found'],404);}if($first['status']==='active'){$pdo->rollBack();out(['error'=>'transaction_already_active'],409);}
+    if($first['transfer_group']){$q=$pdo->prepare("SELECT * FROM treasury_transactions WHERE company_id=? AND transfer_group=? AND status<>'active' ORDER BY id FOR UPDATE");$q->execute([$cid,$first['transfer_group']]);$rows=$q->fetchAll(PDO::FETCH_ASSOC);}else{$rows=[$first];}
+    $incoming=['deposit','transfer_in','exchange_in','fee_in','reversal_in','opening'];$effects=[];foreach($rows as $r){$aid=(int)$r['account_id'];$effects[$aid]=($effects[$aid]??0)+(in_array($r['transaction_type'],$incoming,true)?(float)$r['amount']:-(float)$r['amount']);}
+    $accountIds=array_keys($effects);sort($accountIds);foreach($accountIds as $aid){$q=$pdo->prepare('SELECT opening_balance,allow_negative,is_active FROM treasury_accounts WHERE id=? AND company_id=? FOR UPDATE');$q->execute([$aid,$cid]);$a=$q->fetch(PDO::FETCH_ASSOC);if(!$a||!$a['is_active']){$pdo->rollBack();out(['error'=>'restore_account_inactive','account_id'=>$aid],409);}$q=$pdo->prepare("SELECT COALESCE(SUM(CASE WHEN status<>'active' THEN 0 WHEN transaction_type IN ('deposit','transfer_in','exchange_in','fee_in','reversal_in','opening') THEN amount ELSE -amount END),0) FROM treasury_transactions WHERE account_id=?");$q->execute([$aid]);$projected=(float)$a['opening_balance']+(float)$q->fetchColumn()+$effects[$aid];if(!$a['allow_negative']&&$projected<0){$pdo->rollBack();out(['error'=>'restore_would_make_negative_balance','account_id'=>$aid,'projected_balance'=>$projected],409);}}
+    $ids=array_column($rows,'id');$marks=str_repeat('?,',count($ids)-1).'?';$q=$pdo->prepare("UPDATE treasury_transactions SET status='active',cancelled_at=NULL,cancelled_by=NULL,cancellation_reason=NULL,deleted_at=NULL,deleted_by=NULL,deletion_reason=NULL WHERE company_id=? AND id IN ($marks)");$q->execute(array_merge([$cid],$ids));$count=$q->rowCount();$pdo->prepare('INSERT INTO treasury_audit_logs(company_id,user_id,action,entity_type,entity_id,metadata,ip_address) VALUES(?,?,?,?,?,?,?)')->execute([$cid,$uid,'transaction.restored','treasury_transaction',$id,json_encode(['reason'=>$reason,'restored_ids'=>$ids],JSON_UNESCAPED_UNICODE),$_SERVER['REMOTE_ADDR']??null]);$pdo->commit();out(['restored'=>true,'affected_transactions'=>$count,'transaction_ids'=>$ids]);
+  }catch(Throwable $e){if($pdo->inTransaction())$pdo->rollBack();out(['error'=>'restore_failed','message'=>$e->getMessage()],500);}
+}
+
 if($path==='transactions'&&$method==='GET'){
   $where=['t.company_id=?'];$params=[$cid];if(!(isset($_GET['include_deleted'])&&$_GET['include_deleted']==='1'&&$canManage))$where[]="t.status<>'deleted'";
   if(isset($_GET['account_id'])&&(int)$_GET['account_id']>0){$where[]='t.account_id=?';$params[]=(int)$_GET['account_id'];}
-  if(!empty($_GET['type'])){$where[]='t.transaction_type=?';$params[]=$_GET['type'];}
+  if(!empty($_GET['type'])){$where[]='t.transaction_type=?';$params[]=$_GET['type'];}if(!empty($_GET['status'])&&in_array($_GET['status'],['active','cancelled','deleted'],true)){$where[]='t.status=?';$params[]=$_GET['status'];}
   if(!empty($_GET['from'])){$where[]='t.occurred_at>=?';$params[]=$_GET['from'].' 00:00:00';}
   if(!empty($_GET['to'])){$where[]='t.occurred_at<=?';$params[]=$_GET['to'].' 23:59:59';}
   $limit=max(1,min(100,(int)($_GET['limit']??50)));$offset=max(0,(int)($_GET['offset']??0));
